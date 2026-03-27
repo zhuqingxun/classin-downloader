@@ -100,8 +100,36 @@ async def run_extract(course_keys: list[str]) -> list[VideoInfo]:
     return videos
 
 
+def check_for_update():
+    """启动时检查新版本"""
+    if not getattr(sys, 'frozen', False):
+        return
+
+    from .updater import check_update, do_update
+
+    info = check_update()
+    if not info:
+        return
+
+    size_mb = info['size'] / 1e6
+    console.print(
+        f'[bold yellow]发现新版本 {info["version"]}[/]'
+        f'（当前 v{__version__}，大小 {size_mb:.0f} MB）')
+    try:
+        answer = input('是否立即更新? [Y/n] ').strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        return
+
+    if answer and answer not in ('y', 'yes'):
+        return
+
+    if do_update(info['url'], info['version']):
+        sys.exit(0)
+
+
 def run():
     show_banner()
+    check_for_update()
 
     # Step 1: 获取课程链接
     course_keys = input_course_keys()
