@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.venv/
+dist/
+build/
+*.spec
+*.egg-info/
+auth_state.json
+test-output/
+.playwright-mcp/

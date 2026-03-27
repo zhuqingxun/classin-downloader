@@ -1,0 +1,3 @@
+# ClassIn 课程链接，每行一个
+# 以 # 开头的行为注释
+https://live.eeo.cn/pc.html?courseKey=0d75324578d7a17a
