@@ -3,7 +3,7 @@ import urllib.request
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-from threading import Lock
+from threading import Event
 
 from rich.console import Console
 from rich.progress import (
@@ -14,6 +14,7 @@ from rich.progress import (
 from .extractor import VideoInfo
 
 console = Console()
+_cancel = Event()
 
 
 def _get_remote_size(url: str) -> int:
@@ -63,6 +64,8 @@ def _download_one(video: VideoInfo, output_dir: Path, progress, task_id) -> bool
             downloaded = start_byte
             with open(part_path, mode) as f:
                 while True:
+                    if _cancel.is_set():
+                        return False
                     chunk = resp.read(65536)
                     if not chunk:
                         break
@@ -83,6 +86,7 @@ def _download_one(video: VideoInfo, output_dir: Path, progress, task_id) -> bool
 
 def download_all(videos: list[VideoInfo], output_dir: Path, max_concurrent: int = 3) -> tuple[int, int]:
     """批量下载所有视频，返回 (成功数, 失败数)"""
+    _cancel.clear()
     output_dir.mkdir(parents=True, exist_ok=True)
 
     success = 0
@@ -126,17 +130,24 @@ def download_all(videos: list[VideoInfo], output_dir: Path, max_concurrent: int 
 
             submit_next()
 
-            while futures:
-                for fut in as_completed(futures):
-                    futures.pop(fut)
-                    try:
-                        if fut.result():
-                            success += 1
-                        else:
+            try:
+                while futures:
+                    for fut in as_completed(futures):
+                        futures.pop(fut)
+                        try:
+                            if fut.result():
+                                success += 1
+                            else:
+                                failed += 1
+                        except Exception:
                             failed += 1
-                    except Exception:
-                        failed += 1
-                    submit_next()
-                    break
+                        submit_next()
+                        break
+            except KeyboardInterrupt:
+                _cancel.set()
+                progress.console.print(
+                    '\n[yellow]正在停止下载...已下载的部分已保存（支持断点续传）[/]')
+                video_queue.clear()
+                executor.shutdown(wait=True, cancel_futures=True)
 
     return success, failed

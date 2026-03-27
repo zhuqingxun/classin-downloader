@@ -141,7 +141,8 @@ def run():
     output_dir = DEFAULT_OUTPUT
 
     # Step 5: 下载
-    console.print(f'\n[bold]开始下载 {len(videos)} 个视频...[/]\n')
+    console.print(f'\n[bold]开始下载 {len(videos)} 个视频...[/]')
+    console.print('[dim]按 Ctrl+C 可随时终止，已下载部分支持断点续传[/]\n')
     success, failed = download_all(videos, output_dir, max_concurrent=3)
 
     # Step 6: 结果
