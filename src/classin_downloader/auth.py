@@ -1,5 +1,6 @@
 """登录态管理：手动登录 + storage_state 持久化"""
 import asyncio
+import json
 
 from playwright.async_api import async_playwright
 from rich.console import Console
@@ -10,10 +11,21 @@ console = Console()
 
 
 def is_logged_in() -> bool:
-    return AUTH_FILE.exists()
+    if not AUTH_FILE.exists():
+        return False
+    try:
+        data = json.loads(AUTH_FILE.read_text(encoding='utf-8'))
+        return bool(data.get('cookies'))
+    except (json.JSONDecodeError, OSError):
+        return False
 
 
-async def login_interactive(course_key: str = '0d75324578d7a17a'):
+async def save_auth_state(context):
+    """保存浏览器登录态"""
+    await context.storage_state(path=str(AUTH_FILE))
+
+
+async def login_interactive(course_key: str):
     """打开浏览器让用户手动登录，自动检测登录成功后保存"""
     console.print('\n[bold yellow]需要登录 ClassIn[/]')
     console.print('即将打开浏览器，请在浏览器中完成登录。')
@@ -50,7 +62,7 @@ async def login_interactive(course_key: str = '0d75324578d7a17a'):
         else:
             console.print('[yellow]超时，仍会保存当前状态[/]')
 
-        await context.storage_state(path=str(AUTH_FILE))
+        await save_auth_state(context)
         await browser.close()
 
     console.print('[bold green]登录态已保存[/]\n')
@@ -62,7 +74,12 @@ async def create_browser_context(playwright):
     try:
         browser = await playwright.chromium.launch(headless=False, channel='msedge')
     except Exception:
-        browser = await playwright.chromium.launch(headless=False, channel='chrome')
+        try:
+            browser = await playwright.chromium.launch(headless=False, channel='chrome')
+        except Exception:
+            console.print('[bold red]错误: 未找到 Edge 或 Chrome 浏览器[/]')
+            console.print('请安装 Microsoft Edge 后重试。')
+            raise
 
     context = await browser.new_context(storage_state=str(AUTH_FILE))
     return browser, context

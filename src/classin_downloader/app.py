@@ -1,14 +1,15 @@
 """交互式主程序"""
 import asyncio
 import sys
+from pathlib import Path
 
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from . import __version__
-from .auth import create_browser_context, is_logged_in, login_interactive
-from .config import AUTH_FILE, COURSES_FILE, DEFAULT_OUTPUT
+from .auth import create_browser_context, is_logged_in, login_interactive, save_auth_state
+from .config import COURSES_FILE, DEFAULT_OUTPUT
 from .downloader import download_all
 from .extractor import VideoInfo, extract_all, parse_course_keys
 
@@ -62,20 +63,24 @@ def show_video_table(videos: list[VideoInfo]):
     table.add_column("时长", justify="right")
 
     total_size = 0
+    unknown_count = 0
     for i, v in enumerate(videos, 1):
         size_mb = v.size / 1e6 if v.size else 0
         total_size += v.size
+        if not v.size:
+            unknown_count += 1
         size_str = f"{size_mb:.0f}MB" if size_mb else "未知"
         dur_str = f"{v.duration // 60}分{v.duration % 60}秒" if v.duration else "未知"
         table.add_row(str(i), v.lesson_name, size_str, dur_str)
 
     console.print(table)
     total_gb = total_size / 1e9
+    size_note = f"（{unknown_count} 个大小未知）" if unknown_count else ""
     console.print(f"\n共 [bold]{len(videos)}[/] 个视频", end='')
     if total_gb > 0:
-        console.print(f"，预估总大小 [bold green]{total_gb:.1f} GB[/]")
+        console.print(f"，预估总大小 [bold green]{total_gb:.1f} GB[/]{size_note}")
     else:
-        console.print()
+        console.print(f" {size_note}" if size_note else "")
 
 
 async def run_extract(course_keys: list[str]) -> list[VideoInfo]:
@@ -89,7 +94,7 @@ async def run_extract(course_keys: list[str]) -> list[VideoInfo]:
         try:
             videos = await extract_all(page, course_keys)
         finally:
-            await context.storage_state(path=str(AUTH_FILE))
+            await save_auth_state(context)
             await browser.close()
 
     return videos
@@ -131,13 +136,9 @@ def run():
         confirm = input('确认开始下载? [Y/n] ').strip().lower()
     except (EOFError, KeyboardInterrupt):
         return
-    if confirm and confirm != 'y':
-        custom = input('输入自定义目录 (或回车取消): ').strip()
-        if not custom:
-            return
-        output_dir = __import__('pathlib').Path(custom)
-    else:
-        output_dir = DEFAULT_OUTPUT
+    if confirm and confirm not in ('y', 'yes'):
+        return
+    output_dir = DEFAULT_OUTPUT
 
     # Step 5: 下载
     console.print(f'\n[bold]开始下载 {len(videos)} 个视频...[/]\n')

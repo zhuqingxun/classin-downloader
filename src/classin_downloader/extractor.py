@@ -61,15 +61,15 @@ async def get_video_url(page, course_key: str, lesson: dict) -> list[VideoInfo]:
 
     try:
         await page.goto(url, wait_until='load', timeout=60000)
-    except Exception:
-        pass
+    except Exception as e:
+        console.print(f" [red]页面加载失败: {e}[/]")
+        return []
 
     # 等待 LIVE store 初始化
-    for _ in range(5):
-        await page.wait_for_timeout(1000)
-        has_live = await page.evaluate("() => !!window.LIVE && !!window.LIVE.$store")
-        if has_live:
-            break
+    try:
+        await page.wait_for_function('!!window.LIVE && !!window.LIVE.$store', timeout=5000)
+    except Exception:
+        return []
 
     # 触发播放
     await page.evaluate("""() => {
@@ -81,57 +81,80 @@ async def get_video_url(page, course_key: str, lesson: dict) -> list[VideoInfo]:
         }
     }""")
 
-    # 等待视频源
-    for _ in range(15):
-        await page.wait_for_timeout(1000)
-        try:
-            data = await page.evaluate("""() => {
-                if (window.LIVE && window.LIVE.$store) {
-                    const vs = window.LIVE.$store.state.videoSource;
-                    if (vs && vs.lessonData && vs.lessonData.fileList) {
-                        const files = vs.lessonData.fileList;
-                        const result = files.filter(f => f.Status === '2').map(f => ({
-                            fileId: f.FileId, duration: f.Duration,
-                            size: f.Size,
-                            urls: f.Playset ? f.Playset.filter(p => p.Definition === '0').map(p => p.Url) : []
-                        }));
-                        if (result.length > 0 && result[0].urls.length > 0) return result;
-                    }
-                    const vod = window.LIVE.$store.state.vodSourcesClassroom;
-                    if (vod && vod.length > 0) {
-                        return vod.map(v => ({
-                            fileId: v.fileId || '', duration: 0, size: '0',
-                            urls: v.sources ? v.sources.map(s => s.src) : []
-                        }));
-                    }
-                }
-                const v = document.querySelector('video');
-                if (v && (v.src || v.currentSrc) && !v.srcObject) {
-                    const src = v.src || v.currentSrc;
-                    if (src && src.includes('playback'))
-                        return [{ fileId: '', duration: 0, size: '0', urls: [src] }];
-                }
-                return null;
-            }""")
+    # 等待视频源就绪
+    VIDEO_SOURCE_CHECK = """() => {
+        if (window.LIVE && window.LIVE.$store) {
+            const vs = window.LIVE.$store.state.videoSource;
+            if (vs && vs.lessonData && vs.lessonData.fileList) {
+                const files = vs.lessonData.fileList;
+                if (files.some(f => f.Status === '2' && f.Playset && f.Playset.some(p => p.Definition === '0' && p.Url)))
+                    return true;
+            }
+            const vod = window.LIVE.$store.state.vodSourcesClassroom;
+            if (vod && vod.length > 0) return true;
+        }
+        const v = document.querySelector('video');
+        if (v && (v.src || v.currentSrc) && !v.srcObject) {
+            const src = v.src || v.currentSrc;
+            if (src && src.includes('playback')) return true;
+        }
+        return false;
+    }"""
 
-            if data:
-                videos = []
-                for fi, vf in enumerate(data):
-                    for url in vf.get('urls', []):
-                        suffix = f'_part{fi+1}' if len(data) > 1 else ''
-                        videos.append(VideoInfo(
-                            lesson_name=lesson_name,
-                            url=url,
-                            filename=sanitize_filename(f"{lesson_name}{suffix}.mp4"),
-                            size=int(vf.get('size', 0)),
-                            duration=int(vf.get('duration', 0)),
-                            course_key=course_key,
-                        ))
-                return videos
-        except Exception:
-            pass
+    try:
+        await page.wait_for_function(VIDEO_SOURCE_CHECK, timeout=15000)
+    except Exception:
+        return []
 
-    return []
+    # 提取视频数据
+    try:
+        data = await page.evaluate("""() => {
+            if (window.LIVE && window.LIVE.$store) {
+                const vs = window.LIVE.$store.state.videoSource;
+                if (vs && vs.lessonData && vs.lessonData.fileList) {
+                    const files = vs.lessonData.fileList;
+                    const result = files.filter(f => f.Status === '2').map(f => ({
+                        fileId: f.FileId, duration: f.Duration,
+                        size: f.Size,
+                        urls: f.Playset ? f.Playset.filter(p => p.Definition === '0').map(p => p.Url) : []
+                    }));
+                    if (result.length > 0 && result[0].urls.length > 0) return result;
+                }
+                const vod = window.LIVE.$store.state.vodSourcesClassroom;
+                if (vod && vod.length > 0) {
+                    return vod.map(v => ({
+                        fileId: v.fileId || '', duration: 0, size: '0',
+                        urls: v.sources ? v.sources.map(s => s.src) : []
+                    }));
+                }
+            }
+            const v = document.querySelector('video');
+            if (v && (v.src || v.currentSrc) && !v.srcObject) {
+                const src = v.src || v.currentSrc;
+                if (src && src.includes('playback'))
+                    return [{ fileId: '', duration: 0, size: '0', urls: [src] }];
+            }
+            return null;
+        }""")
+    except Exception:
+        return []
+
+    if not data:
+        return []
+
+    videos = []
+    for fi, vf in enumerate(data):
+        for url in vf.get('urls', []):
+            suffix = f'_part{fi+1}' if len(data) > 1 else ''
+            videos.append(VideoInfo(
+                lesson_name=lesson_name,
+                url=url,
+                filename=sanitize_filename(f"{lesson_name}{suffix}.mp4"),
+                size=int(vf.get('size') or 0),
+                duration=int(vf.get('duration') or 0),
+                course_key=course_key,
+            ))
+    return videos
 
 
 async def extract_all(page, course_keys: list[str], progress_callback=None) -> list[VideoInfo]:
@@ -143,7 +166,10 @@ async def extract_all(page, course_keys: list[str], progress_callback=None) -> l
 
         await page.goto(f'https://live.eeo.cn/pc.html?courseKey={course_key}',
                         wait_until='load', timeout=60000)
-        await page.wait_for_timeout(2000)
+        try:
+            await page.wait_for_function("typeof window.isLogin === 'function'", timeout=5000)
+        except Exception:
+            pass
 
         # 验证登录
         is_login = await page.evaluate(

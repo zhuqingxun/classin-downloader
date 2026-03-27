@@ -1,5 +1,6 @@
 """多文件并发下载器：断点续传 + 进度显示"""
 import urllib.request
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 from threading import Lock
@@ -24,7 +25,11 @@ def _get_remote_size(url: str) -> int:
 
 def _download_one(video: VideoInfo, output_dir: Path, progress, task_id) -> bool:
     """下载单个文件，支持断点续传"""
-    filepath = output_dir / video.filename
+    if not video.url.startswith('https://'):
+        console.print(f"  [yellow]跳过非 HTTPS URL: {video.filename}[/]")
+        return False
+
+    filepath = output_dir / Path(video.filename).name
     part_path = filepath.with_suffix(filepath.suffix + '.part')
 
     # 已完成的跳过
@@ -96,37 +101,34 @@ def download_all(videos: list[VideoInfo], output_dir: Path, max_concurrent: int 
 
         # 创建所有任务的进度条
         task_ids = {}
-        for v in videos:
+        for i, v in enumerate(videos):
             tid = progress.add_task(
                 "download",
                 filename=v.filename[:40],
                 total=v.size or None,
                 visible=False,
             )
-            task_ids[v.filename] = tid
+            task_ids[i] = tid
 
         # 并发下载
         with ThreadPoolExecutor(max_workers=max_concurrent) as executor:
             futures = {}
-            active_count = 0
-            video_queue = list(videos)
+            video_queue = deque(range(len(videos)))
 
             def submit_next():
-                nonlocal active_count
-                while video_queue and active_count < max_concurrent:
-                    v = video_queue.pop(0)
-                    tid = task_ids[v.filename]
+                while video_queue and len(futures) < max_concurrent:
+                    idx = video_queue.popleft()
+                    v = videos[idx]
+                    tid = task_ids[idx]
                     progress.update(tid, visible=True)
                     fut = executor.submit(_download_one, v, output_dir, progress, tid)
                     futures[fut] = v
-                    active_count += 1
 
             submit_next()
 
             while futures:
-                done_futures = []
                 for fut in as_completed(futures):
-                    v = futures[fut]
+                    futures.pop(fut)
                     try:
                         if fut.result():
                             success += 1
@@ -134,12 +136,7 @@ def download_all(videos: list[VideoInfo], output_dir: Path, max_concurrent: int 
                             failed += 1
                     except Exception:
                         failed += 1
-                    done_futures.append(fut)
-                    active_count -= 1
-
-                for fut in done_futures:
-                    del futures[fut]
-
-                submit_next()
+                    submit_next()
+                    break
 
     return success, failed
